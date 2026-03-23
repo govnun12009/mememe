@@ -74,4 +74,5 @@ pip install -r requirements.txt
 # 3. Создаем бота @BotFather → получаем TOKEN
 # 4. Запускаем
 python bot.py
+<img width="4420" height="7223" alt="Telegram Bot Weather-2026-03-23-104023" src="https://github.com/user-attachments/assets/2bd73fca-f739-4a78-9787-f64bf700b1bd" />
 
