@@ -1,0 +1,384 @@
+import telebot
+import requests
+import threading
+import time
+from datetime import datetime
+from telebot import types
+
+BOT_TOKEN = "8633952234:AAHzzjWmFtSQ9YNDkj0wzGQNVLpn95LntGU"
+bot = telebot.TeleBot(BOT_TOKEN)
+
+SUBSCRIPTIONS = {}
+WAITING_FOR_ACTION = {}
+USER_STATS = {}
+FAVORITES = {}
+
+WEATHER_ICONS = {
+    0: "☀️", 1: "🌤️", 2: "⛅", 3: "🌥️", 45: "🌫️", 48: "🌫️",
+    51: "🌦️", 61: "🌧️", 63: "🌧️", 65: "⛈️", 71: "❄️", 73: "❄️", 
+    77: "🌨️", 80: "🌦️", 95: "⛈️"
+}
+
+def get_weather_data(lat: float, lon: float):
+    url = (
+        "https://api.open-meteo.com/v1/forecast?"
+        f"latitude={lat}&longitude={lon}&"
+        "current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code,pressure_msl&"
+        "daily=temperature_2m_max,temperature_2m_min,weather_code&"
+        "hourly=temperature_2m,precipitation_probability&"
+        "timezone=auto"
+    )
+    try:
+        resp = requests.get(url, timeout=30)
+        return resp.json() if resp.status_code == 200 else None
+    except:
+        return None
+
+def get_weather_by_coords(lat: float, lon: float):
+    """🌍 Погода по координатам"""
+    data = get_weather_data(lat, lon)
+    if not data: return None, "❌ Ошибка погоды"
+    
+    current = data["current"]
+    temp = current["temperature_2m"]
+    humidity = current["relative_humidity_2m"]
+    wind = current["wind_speed_10m"]
+    code = current["weather_code"]
+    pressure = current["pressure_msl"]
+    
+    precip = 0
+    if "hourly" in data and len(data["hourly"]["precipitation_probability"]) > 0:
+        precip = data["hourly"]["precipitation_probability"][0]
+    
+    icon = WEATHER_ICONS.get(code, "🌤️")
+    advice = get_clothing_advice(temp, wind, precip)
+    
+    location_text = f"📍 *Твоё местоположение*\n🌐 lat:{lat:.2f} lon:{lon:.2f}"
+    
+    text = (
+        f"{location_text}\n\n"
+        f"{icon} *Погода здесь*\n\n"
+        f"🌡 {temp}°C {icon}\n"
+        f"💧 {humidity}% • 💨 {wind}м/с\n"
+        f"📉 {pressure:.0f}гПа\n\n"
+        f"{advice}"
+    )
+    return temp, text
+
+def get_weather(city_input: str, forecast_days: int = 1):
+    city = city_input.strip()
+    lat, lon, city_name = get_coords_from_name(city)
+    
+    if not city: return None, "❌ Пустой запрос."
+    if lat is None: return None, f"❌ Город `{city}` не найден."
+    
+    data = get_weather_data(lat, lon)
+    if not data: return None, "❌ Ошибка погоды."
+    
+    current = data["current"]
+    temp = current["temperature_2m"]
+    humidity = current["relative_humidity_2m"]
+    wind = current["wind_speed_10m"]
+    code = current["weather_code"]
+    pressure = current["pressure_msl"]
+    
+    precip = 0
+    if "hourly" in data and len(data["hourly"]["precipitation_probability"]) > 0:
+        precip = data["hourly"]["precipitation_probability"][0]
+    
+    icon = WEATHER_ICONS.get(code, "🌤️")
+    advice = get_clothing_advice(temp, wind, precip)
+    
+    forecast = ""
+    if "daily" in data:
+        daily = data["daily"]
+        days = ["Сегодня", "Завтра", "Пн", "Вт", "Ср", "Чт", "Пт"][:forecast_days]
+        for i, day in enumerate(days):
+            if i < len(daily["time"]):
+                t_max = daily["temperature_2m_max"][i]
+                t_min = daily["temperature_2m_min"][i]
+                day_icon = WEATHER_ICONS.get(daily["weather_code"][i], "🌤️")
+                forecast += f"{day_icon} {day}: {t_max}°/{t_min}°\n"
+    
+    text = (
+        f"{icon} *{city_name}*\n\n"
+        f"🌡 {temp}°C {icon}\n"
+        f"💧 {humidity}% • 💨 {wind}м/с\n"
+        f"📉 {pressure:.0f}гПа\n\n"
+        f"{advice}\n\n"
+        f"📅 *Прогноз:*\n{forecast}"
+    )
+    return temp, text
+
+def get_clothing_advice(temp: float, wind: float = 0, precip: int = 0) -> str:
+    feels_like = temp - (wind * 0.3)
+    rain_advice = " ☔ Возьми зонт!" if precip > 50 else ""
+    
+    if feels_like >= 28:
+        return f"🏖️ **ЖАРА** (+28°C+)\n👕 Майка + шорты\n🩴 Шлёпанцы\n🧢 Панама{rain_advice}"
+    elif feels_like >= 22:
+        return f"☀️ **ТЕПЛО** (+22-28°C)\n👕 Футболка + шорты\n👖 Лёгкие брюки\n🤿 Сандалии{rain_advice}"
+    elif feels_like >= 16:
+        return f"🌤️ **КОМФОРТНО** (+16-22°C)\n👕 Футболка + чиносы\n🧥 Лёгкая ветровка\n👟 Кроссовки{rain_advice}"
+    elif feels_like >= 10:
+        return f"🌦️ **Прохладно** (+10-16°C)\n👕 Лонгслив + джинсы\n🧥 Флис + куртка\n🧣 Шарф\n👢 Ботинки{rain_advice}"
+    elif feels_like >= 4:
+        return f"🍂 **ОСЕНЬ** (+4-10°C)\n👕 Водолазка + свитер\n🧥 Демисезонка\n🧤 Перчатки\n🧣 Шарф + шапка{rain_advice}"
+    elif feels_like >= -3:
+        return f"❄️ **ЗИМА** (-3-4°C)\n👚 Термобельё + флис\n🧥 Пуховик\n🧣 Шарф + шапка\n🧤 Вязаные перчатки{rain_advice}"
+    elif feels_like >= -10:
+        return f"🥶 **МОРОЗ** (-10--3°C)\n🔥 Термобельё 2сл + пуховик\n🧣 Шарф + балаклава\n🧤 Тёплые варежки\n👢 Сапоги{rain_advice}"
+    else:
+        return f"🌨️ **СИЛЬНЫЙ МОРОЗ** (<-10°C)\n🔥 Термобельё + пуховик с мехом\n❄️ Балаклава + очки\n🧤 Мембранные варежки\n🦺 Термосумка{rain_advice}"
+
+def get_coords_from_name(city: str):
+    url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=ru"
+    try:
+        resp = requests.get(url, timeout=15)
+        data = resp.json()
+        if resp.status_code == 200 and data.get("results"):
+            result = data["results"][0]
+            return result["latitude"], result["longitude"], result["name"]
+    except:
+        pass
+    return None, None, None
+
+def get_hourly_forecast(city: str):
+    lat, lon, city_name = get_coords_from_name(city)
+    if not lat: return "❌ Город не найден"
+    
+    data = get_weather_data(lat, lon)
+    if not data or "hourly" not in data: return "❌ Нет данных"
+    
+    hourly = data["hourly"]
+    now = datetime.now().hour
+    text = f"📊 *{city_name} — 12ч:*\n\n"
+    
+    for i in range(12):
+        hour = (now + i) % 24
+        temp = round(hourly["temperature_2m"][i], 1)
+        precip = hourly["precipitation_probability"][i]
+        icon = "🌧️" if precip > 50 else "☀️"
+        text += f"{hour:02d}:00 {icon} {temp}° ({precip}%)\n"
+    
+    return text
+
+def compare_cities(city_input: str):
+    cities = [c.strip() for c in city_input.split(",")][:3]
+    results = []
+    for city in cities:
+        temp, _ = get_weather(city)
+        if temp: results.append((city, temp))
+    
+    if not results: return "❌ Города не найдены"
+    results.sort(key=lambda x: x[1], reverse=True)
+    text = "🥇🥈🥉 *Рейтинг:*\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (city, temp) in enumerate(results):
+        text += f"{medals[i]} {city}: *{temp}°C*\n"
+    return text
+
+def main_menu():
+    kb = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    btns = [
+        ("🌤️ Погода здесь", ""),  
+        ("📍 Мой город", "current"),
+        ("👗 Что одеть", "advice"),
+        ("📅 Неделя", "forecast_5d"),      
+        ("⭐ Избранное", "favorites"),
+        ("⏰ Подписка", "subscribe"),
+        ("🥇 Топ городов", "compare"),
+        ("📊 Статистика", "stats")
+    ]
+    for text, cb_data in btns:
+        kb.add(types.KeyboardButton(text, request_location=(text == "🌤️ Погода здесь")))
+    return kb
+
+def action_menu():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    btns = [
+        ("🌤️ Сейчас", "current"),
+        ("📅 5 дней", "forecast_5d"),
+        ("🕐 По часам", "hourly"),
+        ("👕 Одежда", "advice"),
+        ("⭐ Любимые", "favorites"),
+        ("⏰ Подписка", "subscribe"),
+        ("🥇 Рейтинг", "compare"),
+        ("📊 Статистика", "stats"),
+    ]
+    for text, cb in btns:
+        kb.add(types.InlineKeyboardButton(text, callback_data=cb))
+    kb.add(types.InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu"))
+    return kb
+
+@bot.message_handler(commands=["start"])
+def start(message):
+    bot.send_message(
+        message.chat.id,
+        "🌤️ *Погода*\n\n"
+        "💡 *🌤️ Погода по гео* — поделись локацией\n"
+        "📅 *Неделя* — прогноз на 7 дней\n"
+        "👗 *Что одеть* — советы",
+        parse_mode="Markdown",
+        reply_markup=main_menu()
+    )
+
+@bot.message_handler(content_types=['location'])
+def handle_location(message):
+    chat_id = message.chat.id
+    lat = message.location.latitude
+    lon = message.location.longitude
+    
+    stats = USER_STATS.get(chat_id, {"requests": 0, "cities": set()})
+    stats["requests"] += 1
+    USER_STATS[chat_id] = stats
+    
+    temp, text = get_weather_by_coords(lat, lon)
+    bot.reply_to(message, text or "❌ Ошибка", parse_mode="Markdown", reply_markup=main_menu())
+
+@bot.message_handler(func=lambda message: True)
+def handle_menu_buttons(message):
+    chat_id = message.chat.id
+    text = message.text.strip()
+
+    stats = USER_STATS.get(chat_id, {"requests": 0, "cities": set()})
+    stats["requests"] += 1
+    stats["cities"].add(text)
+    USER_STATS[chat_id] = stats
+
+    if text == "🌤️ Погода здесь":
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        btn_location = types.KeyboardButton("📍 Поделиться геопозицией", request_location=True)
+        btn_cancel = types.KeyboardButton("🔙 Отмена")
+        markup.add(btn_location, btn_cancel)
+        bot.send_message(chat_id, "📍 *Поделись геопозицией!*\n\n👆 Нажми кнопку ниже", 
+                        parse_mode="Markdown", reply_markup=markup)
+        return
+
+    if text == "🔙 Отмена" or text == "🔙 Главное меню":
+        bot.send_message(chat_id, "🌤️ *Главное меню*", parse_mode="Markdown", reply_markup=main_menu())
+        return
+
+    actions = {
+        "📍 Мой город": "current",
+        "👗 Что одеть": "advice", 
+        "📅 Неделя": "forecast_5d",
+        "⭐ Избранное": "favorites",
+        "⏰ Подписка": "subscribe",
+        "🥇 Топ городов": "compare",
+        "📊 Статистика": "stats"
+    }
+    
+    if text in actions:
+        action = actions[text]
+        WAITING_FOR_ACTION[chat_id] = action
+        bot.send_message(chat_id, f"💬 *{action_names.get(action, action)}*\n\nГород:", 
+                        parse_mode="Markdown", reply_markup=types.ReplyKeyboardMarkup(
+                            resize_keyboard=True).add(types.KeyboardButton("🔙 Главное меню")))
+        return
+
+    if chat_id in WAITING_FOR_ACTION:
+        action = WAITING_FOR_ACTION.pop(chat_id)
+        
+        if action == "current":
+            temp, result = get_weather(text)
+            bot.send_message(chat_id, result or "❌ Ошибка", parse_mode="Markdown", reply_markup=main_menu())
+            
+        elif action == "forecast_5d":
+            temp, result = get_weather(text, 5)
+            bot.send_message(chat_id, result or "❌ Ошибка", parse_mode="Markdown", reply_markup=main_menu())
+            
+        elif action == "advice":
+            temp, _ = get_weather(text)
+            if temp:
+                advice = get_clothing_advice(temp, 5)
+                bot.send_message(chat_id, f"👗 *{text}:*\n{advice}", parse_mode="Markdown", reply_markup=main_menu())
+            else:
+                bot.send_message(chat_id, "❌ Город не найден", parse_mode="Markdown", reply_markup=main_menu())
+                
+        elif action == "favorites":
+            favs = FAVORITES.get(chat_id, [])
+            fav_text = "⭐ *Избранное:*\n" + ("\n".join([f"• {c}" for c in favs]) if favs else "Пусто")
+            bot.send_message(chat_id, fav_text, parse_mode="Markdown", reply_markup=main_menu())
+            
+        elif action == "subscribe":
+            temp, result = get_weather(text)
+            if temp:
+                SUBSCRIPTIONS[chat_id] = text
+                bot.send_message(chat_id, f"✅ *Подписка: {text}*\n⏰ Каждые 30мин", parse_mode="Markdown", reply_markup=main_menu())
+            else:
+                bot.send_message(chat_id, result or "❌ Ошибка", parse_mode="Markdown", reply_markup=main_menu())
+                
+        elif action == "compare":
+            result = compare_cities(text)
+            bot.send_message(chat_id, result, parse_mode="Markdown", reply_markup=main_menu())
+            
+        elif action == "stats":
+            stats = USER_STATS.get(chat_id, {"requests": 0, "cities": set()})
+            stats_text = f"📊 *Статистика:*\n📈 Запросов: {stats['requests']}\n🏙️ Городов: {len(stats['cities'])}"
+            bot.send_message(chat_id, stats_text, parse_mode="Markdown", reply_markup=main_menu())
+        
+        return
+
+    temp, result = get_weather(text)
+    bot.reply_to(message, result or "❌ Город не найден", parse_mode="Markdown", reply_markup=main_menu())
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call: types.CallbackQuery):
+    chat_id = call.message.chat.id
+    action = call.data
+    
+    if action == "main_menu":
+        bot.edit_message_text("🌤️ *Главное меню*", chat_id, call.message.id, 
+                            parse_mode="Markdown", reply_markup=main_menu())
+        bot.answer_callback_query(call.id)
+        return
+    
+    if action == "stats":
+        stats = USER_STATS.get(chat_id, {"requests": 0, "cities": set()})
+        text = f"📊 *Твоя статистика:*\n📈 Запросов: {stats['requests']}\n🏙️ Городов: {len(stats['cities'])}"
+        bot.edit_message_text(text, chat_id, call.message.id, parse_mode="Markdown", reply_markup=action_menu())
+        bot.answer_callback_query(call.id)
+        return
+    
+    WAITING_FOR_ACTION[chat_id] = action
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text(
+        f"📝 *{action_names.get(action, action)}*\n\n💬 Введи город:",
+        chat_id, call.message.id, parse_mode="Markdown",
+        reply_markup=types.InlineKeyboardMarkup().add(
+            types.InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")
+        )
+    )
+
+action_names = {
+    "current": "🌤️ Сейчас", "forecast_5d": "📅 Неделя", 
+    "hourly": "🕐 По часам", "advice": "👗 Одежда", 
+    "subscribe": "⏰ Подписка", "compare": "🥇 Рейтинг"
+}
+
+def weather_notifier():
+    while True:
+        time.sleep(1800)  
+        for chat_id, city in list(SUBSCRIPTIONS.items()):
+            try:
+                temp, text = get_weather(city)
+                if temp:
+                    bot.send_message(chat_id, f"⏰ *{city}:*\n\n{text}", 
+                                   parse_mode="Markdown", reply_markup=main_menu())
+            except:
+                pass
+        time.sleep(1)
+
+notifier_thread = threading.Thread(target=weather_notifier, daemon=True)
+notifier_thread.start()
+
+print("🚀 бот запущен")
+
+while True:
+    try:
+        bot.infinity_polling(none_stop=True, interval=0, timeout=60, long_polling_timeout=60)
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        print("🔄 Перезапуск через 5 сек...")
+        time.sleep(5)
