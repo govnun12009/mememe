@@ -49,3 +49,10 @@
 🌤️ Завтра: -2°/-5°
 
 Пн: 0°/-3°
+///////////////////////////////////////////
+Open-Meteo API (бесплатно, без ключей)
+Geocoding API (поиск городов)
+pyTelegramBotAPI
+Threading (уведомления)
+💾 In-memory storage
+
