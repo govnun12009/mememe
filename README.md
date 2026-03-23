@@ -61,3 +61,17 @@ Threading (уведомления)
 
 💾 In-memory storage
 
+
+
+Как установить 
+# 1. Клонируем
+git clone https://github.com/yourusername/weatherbot.git
+cd weatherbot
+
+# 2. Устанавливаем
+pip install -r requirements.txt
+
+# 3. Создаем бота @BotFather → получаем TOKEN
+# 4. Запускаем
+python bot.py
+
